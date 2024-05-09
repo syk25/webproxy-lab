@@ -13,9 +13,9 @@
 void doit(int fd);
 void read_requesthdrs(rio_t *rp);
 int parse_uri(char *uri, char *filename, char *cgiargs);
-void serve_static(int fd, char *filename, int filesize, char *version);
+void serve_static(int fd, char *filename, int filesize, char *version, int check);
 void get_filetype(char *filename, char *filetype);
-void serve_dynamic(int fd, char *filename, char *cgiargs, char *version);
+void serve_dynamic(int fd, char *filename, char *cgiargs, char *version, int check, char *method);
 void clienterror(int fd, char *cause, char *errnum, char *shortmsg,
                  char *longmsg);
 
@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
  */
 
 void doit(int fd) {  // 식별자를 인자로 받음
-  int is_static;
+  int is_static, check = -1;
   struct stat sbuf;
   char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
   char filename[MAXLINE], cgiargs[MAXLINE];
@@ -79,10 +79,17 @@ void doit(int fd) {  // 식별자를 인자로 받음
   printf("Request headers: \n");
   sscanf(buf, "%s %s %s", method, uri, version);
 
-  if (strcasecmp(method, "GET")) {  // GET 메세지가 아닌 경우 에러 메세지 출력
+  if (strcasecmp(method, "GET") && strcasecmp(method, "HEAD")) {  // GET 메세지가 아닌 경우 에러 메세지 출력
     clienterror(fd, method, "501", "Not implemented",
                 "Tiny does not implement this method");
     return;
+  }
+
+  // 메서드를 찾기 위한 초기화
+  if(!strcasecmp(method, "GET")){ // GET 메서드인 경우
+    check = 0;
+  } else if(!strcasecmp(method, "HEAD")){ // HEAD 메서드인 경우
+    check = 1;
   }
 
   read_requesthdrs(&rio);  // 요청 헤더 읽기
@@ -108,7 +115,7 @@ void doit(int fd) {  // 식별자를 인자로 받음
                   "Tiny couldn't read the file");  // 에러 메세지 출력
       return;
     }
-    serve_static(fd, filename, sbuf.st_size, version);  // 정적 컨텐츠 전달
+    serve_static(fd, filename, sbuf.st_size, version, check);  // 정적 컨텐츠 전달
   } else { /* 동적 컨텐츠 보내기 */
     if (!(S_ISREG(sbuf.st_mode)) ||
         !(S_IXUSR & sbuf.st_mode)) {  // 1) 정규 파일이 아니면 2) 사용자가 읽을
@@ -117,7 +124,7 @@ void doit(int fd) {  // 식별자를 인자로 받음
                   "Tiny couldn't run the CGI program");  // 에러 메세지 출력
       return;
     }
-    serve_dynamic(fd, filename, cgiargs, version);  // 동적 컨텐츠 전달
+    serve_dynamic(fd, filename, cgiargs, version, check, method);  // 동적 컨텐츠 전달
   }
 }
 
@@ -167,7 +174,7 @@ int parse_uri(char *uri, char *filename, char *cgiargs) {
 
 /* serve_static:  */
 
-void serve_static(int fd, char *filename, int filesize, char *version) {
+void serve_static(int fd, char *filename, int filesize, char *version, int check) {
   int srcfd;
   char *srcp, filetype[MAXLINE], buf[MAXBUF];
 
@@ -183,7 +190,6 @@ void serve_static(int fd, char *filename, int filesize, char *version) {
   printf("%s", buf);
 
   /* 클라이언트에게 응답 바디 보내기 */
-  srcfd = Open(filename, O_RDONLY, 0);
 
   /**
    * 숙제: 11.9
@@ -240,18 +246,24 @@ void serve_static(int fd, char *filename, int filesize, char *version) {
    *  */
 
   // 바꿔야할 코드
+  // srcfd = Open(filename, O_RDONLY, 0);
   // srcp = Mmap(0, filesize, PROT_READ, MAP_PRIVATE, srcfd, 0);
   // Close(srcfd);
   // Rio_writen(fd, srcp, filesize);
   // Munmap(srcp, filesize);
 
   // 바꾼코드
-
+  if(check == 0){
+  srcfd = Open(filename, O_RDONLY, 0);
   srcp = (char *)Malloc(filesize);  // 파일 크기 만큼 동적할당 후 주소 반환
   Rio_readn(srcfd, srcp, filesize);  // 파일을 읽고 srcp 에 저장
   Close(srcfd);                      // 연결 끊기
   Rio_writen(fd, srcp, filesize);  // 클라이언트에게 파일을 보낸다
   Free(srcp);                      // 메모리 해제
+  }else{
+    return;
+  }
+  
 }
 
 void get_filetype(char *filename, char *filetype) {
@@ -270,7 +282,7 @@ void get_filetype(char *filename, char *filetype) {
   }
 }
 
-void serve_dynamic(int fd, char *filename, char *cgiargs, char *version) {
+void serve_dynamic(int fd, char *filename, char *cgiargs, char *version, int check, char *method) {
   char buf[MAXLINE], *emptylist[] = {NULL};
 
   /* HTTP 응답의 첫번째 부분 반환 */
@@ -283,6 +295,10 @@ void serve_dynamic(int fd, char *filename, char *cgiargs, char *version) {
   if (Fork() == 0) {
     /* Real Server는 모든 CGI 변수를 여기로 둠*/
     setenv("QUERY_STRING", cgiargs, 1);
+    setenv("REQUEST_METHOD", method, 1);
+    
+    printf("%s\n", method);
+    
     Dup2(fd, STDOUT_FILENO);
     Execve(filename, emptylist, environ);
   }
